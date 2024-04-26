@@ -41,6 +41,8 @@ def download_image_from_url(url):
 
             backblaze_uploader.upload_file(local_filename, f'image_{suffix}.{image_extension}')
 
+            os.remove(local_filename)
+
 
 def download_galleries(galleries: []):
     for image_url in galleries:
