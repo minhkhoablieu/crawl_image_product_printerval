@@ -10,7 +10,7 @@ load_dotenv()
 
 client = MongoClient(os.getenv('ATLAS_URI'))
 db = client[os.getenv('DB_NAME')]
-collection_product = db['crawl_printerval_products']
+collection_product = db[os.getenv('PRODUCTS_COLLECTION')]
 
 backblaze_uploader = backblazeuploader.BackblazeUploader(os.getenv('B2_KEY_ID'), os.getenv('B2_APPLICATION_KEY'),
                                                          os.getenv('B2_BUCKET_NAME'))
@@ -33,21 +33,31 @@ def download_image_from_url(url):
         suffix = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
 
         image_extension = get_extension_from_url(url)
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            local_filename = f'image_{suffix}.{image_extension}'
-            with open(local_filename, 'wb') as f:
-                f.write(response.content)
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                local_filename = f'image_{suffix}.{image_extension}'
+                with open(local_filename, 'wb') as f:
+                    f.write(response.content)
 
-            backblaze_uploader.upload_file(local_filename, f'image_{suffix}.{image_extension}')
+                link_b2 = backblaze_uploader.upload_file(local_filename, f'image_{suffix}.{image_extension}')
 
-            os.remove(local_filename)
+                os.remove(local_filename)
+
+                return link_b2
+        except:
+            print("An exception occurred")
+            pass
 
 
 def download_galleries(galleries: []):
+    new_galleries = []
     for image_url in galleries:
-        download_image_from_url(image_url)
-    pass
+        link_b2 = download_image_from_url(image_url)
+        if link_b2:
+            new_galleries.append(link_b2)
+
+    return new_galleries
 
 
 def download_variant_galleries(galleries: []):
@@ -57,8 +67,7 @@ def download_variant_galleries(galleries: []):
 
 
 def download_thumbnail_url(thumbnail_url):
-    download_image_from_url(thumbnail_url)
-    pass
+    return download_image_from_url(thumbnail_url)
 
 
 class Crawler:
@@ -74,18 +83,20 @@ class Crawler:
 
     def run(self):
         for product in self.products:
-            print(product['id'])
-            # collection_product.update_one({'_id': product['_id']}, {"$set": {'crawled': CRAWLING}})
-            download_galleries(product['galleries'])
-            # download_thumbnail_url(product['thumbnail_url'])
-            # collection_product.update_one({'_id': product['_id']}, {"$set": {'crawled': CRAWLED}})
+            print("Crawling product: ", product['_id'])
+            collection_product.update_one({'_id': product['_id']}, {"$set": {'crawled': CRAWLING}})
+            new_galleries = download_galleries(product['galleries'])
+
+            new_thumbnail_url = download_thumbnail_url(product['thumbnail_url'])
+            collection_product.update_one({'_id': product['_id']}, {
+                "$set": {'crawled': CRAWLED, 'new_galleries': new_galleries, 'new_thumbnail_url': new_thumbnail_url}})
+            print("Crawled product: ", product['_id'])
 
 
 if __name__ == '__main__':
     _products = collection_product.find({
         'synced_to_mysql': {'$in': [None, False]},
         'crawled': {'$in': [None, False]},
-        'id': {'$in': [93, 73, 88, 117]}
-    }).limit(5)
+    })
 
     Crawler(products=_products).run()
