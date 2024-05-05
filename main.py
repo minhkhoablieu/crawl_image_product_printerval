@@ -11,15 +11,13 @@ load_dotenv()
 client = MongoClient(os.getenv('ATLAS_URI'))
 db = client[os.getenv('DB_NAME')]
 collection_product = db[os.getenv('PRODUCTS_COLLECTION')]
+collection_duplicate_image = db[os.getenv('DUPLICATE_IMAGE_COLLECTION')]
 
 backblaze_uploader = backblazeuploader.BackblazeUploader(os.getenv('B2_KEY_ID'), os.getenv('B2_APPLICATION_KEY'),
                                                          os.getenv('B2_BUCKET_NAME'))
 
 headers = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'}
-
-CRAWLING = 1
-CRAWLED = 2
 
 
 def get_extension_from_url(url):
@@ -42,6 +40,8 @@ def download_image_from_url(url):
 
                 link_b2 = backblaze_uploader.upload_file(local_filename, f'image_{suffix}.{image_extension}')
 
+                collection_duplicate_image.insert_one({'image_url': url, 'link_b2': link_b2})
+
                 os.remove(local_filename)
 
                 return link_b2
@@ -50,10 +50,18 @@ def download_image_from_url(url):
             pass
 
 
+def check_duplicate_image(image_url):
+    return list(collection_duplicate_image.find({'image_url': image_url}))
+
+
 def download_galleries(galleries: []):
     new_galleries = []
     for image_url in galleries:
-        link_b2 = download_image_from_url(image_url)
+        if not check_duplicate_image(image_url):
+            link_b2 = download_image_from_url(image_url)
+        else:
+            link_b2 = check_duplicate_image(image_url)[0]['link_b2']
+
         if link_b2:
             new_galleries.append(link_b2)
 
@@ -66,8 +74,13 @@ def download_variant_galleries(galleries: []):
     pass
 
 
-def download_thumbnail_url(thumbnail_url):
-    return download_image_from_url(thumbnail_url)
+def download_thumbnail_url(image_url):
+    if not check_duplicate_image(image_url):
+        link_b2 = download_image_from_url(image_url)
+    else:
+        link_b2 = check_duplicate_image(image_url)[0]['link_b2']
+
+    return link_b2
 
 
 class Crawler:
@@ -84,19 +97,22 @@ class Crawler:
     def run(self):
         for product in self.products:
             print("Crawling product: ", product['_id'])
-            collection_product.update_one({'_id': product['_id']}, {"$set": {'crawled': CRAWLING}})
-            new_galleries = download_galleries(product['galleries'])
+            new_image_url = None
+            if product['image_url']:
+                new_image_url = download_thumbnail_url(product['image_url'])
 
-            new_thumbnail_url = download_thumbnail_url(product['thumbnail_url'])
+            new_galleries = None
+            if product['galleries']:
+                new_galleries = download_galleries(product['galleries'])
+
             collection_product.update_one({'_id': product['_id']}, {
-                "$set": {'crawled': CRAWLED, 'new_galleries': new_galleries, 'new_thumbnail_url': new_thumbnail_url}})
+                "$set": {'status': 11, 'new_galleries': new_galleries, 'new_image_url': new_image_url}})
             print("Crawled product: ", product['_id'])
 
 
 if __name__ == '__main__':
     _products = collection_product.find({
-        'synced_to_mysql': {'$in': [None, False]},
-        'crawled': {'$in': [None, False]},
+        'status': 10
     })
-
+    # print(_products)
     Crawler(products=_products).run()
